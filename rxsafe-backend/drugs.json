@@ -1,0 +1,34 @@
+{
+  "list": [
+    {
+      "name": "paracetamol",
+      "category": "Analgesic",
+      "minDose": 500,
+      "maxDose": 1000
+    },
+    {
+      "name": "ibuprofen",
+      "category": "NSAID",
+      "minDose": 200,
+      "maxDose": 400
+    },
+    {
+      "name": "amoxicillin",
+      "category": "Antibiotic",
+      "minDose": 250,
+      "maxDose": 500
+    },
+    {
+      "name": "metformin",
+      "category": "Antidiabetic",
+      "minDose": 500,
+      "maxDose": 2000
+    },
+    {
+      "name": "atorvastatin",
+      "category": "Statin",
+      "minDose": 10,
+      "maxDose": 80
+    }
+  ]
+}

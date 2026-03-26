@@ -1,0 +1,353 @@
+/**
+ * OCR Service — GPT-4o Vision (FIXED)
+ *
+ * WHAT WAS WRONG BEFORE:
+ * 1. processImage() was receiving a file PATH (string) but expected a Buffer
+ * 2. Tesseract was being used — terrible for handwritten prescriptions
+ * 3. GPT-4o Vision was never actually wired up
+ *
+ * THIS VERSION:
+ * - Accepts BOTH file path (string) OR Buffer
+ * - Uses GPT-4o Vision as primary (best for handwriting)
+ * - Specialized medical prompt to extract drug names accurately
+ * - Falls back to Google Vision if OpenAI fails
+ * - Falls back to Tesseract as last resort
+ */
+
+import fs from "fs";
+import path from "path";
+import os from "os";
+import axios from "axios";
+import sharp from "sharp";
+import Tesseract from "tesseract.js";
+import logger from "../config/logger";
+
+/* ============================================================
+   TYPES
+============================================================ */
+
+export interface OCRResult {
+  text: string;
+  provider: string;
+  drugs: string[];         // extracted drug names directly from OCR
+  rawResponse?: string;    // full GPT response for debugging
+}
+
+/* ============================================================
+   HELPER — accept path OR buffer, always return Buffer
+============================================================ */
+
+async function toBuffer(input: string | Buffer): Promise<Buffer> {
+  if (Buffer.isBuffer(input)) return input;
+  // it's a file path
+  if (!fs.existsSync(input)) {
+    throw new Error(`File not found at path: ${input}`);
+  }
+  return fs.readFileSync(input);
+}
+
+/* ============================================================
+   IMAGE PREPROCESSING (improves all OCR engines)
+============================================================ */
+
+export async function preprocessImage(buffer: Buffer): Promise<Buffer> {
+  try {
+    return await sharp(buffer)
+      .resize({ width: 2000, withoutEnlargement: false })
+      .grayscale()
+      .normalize()
+      .median(1)
+      .sharpen({ sigma: 1.5 })
+      .toBuffer();
+  } catch (error) {
+    logger.warn("Preprocessing failed, using raw buffer:", error);
+    return buffer;
+  }
+}
+
+/* ============================================================
+   GPT-4o VISION  ← THIS IS YOUR PRIMARY ENGINE
+   
+   The medical prompt is what makes this work for prescriptions.
+   It tells GPT-4o exactly what to look for and how to return it.
+============================================================ */
+
+export async function processWithGPT4oVision(
+  imageBuffer: Buffer
+): Promise<OCRResult> {
+
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("OPENAI_API_KEY is not set in your .env file");
+  }
+
+  logger.info("Starting GPT-4o Vision OCR");
+
+  const base64Image = imageBuffer.toString("base64");
+
+  // Detect image type from buffer header
+  const mimeType = detectMimeType(imageBuffer);
+
+  const response = await axios.post(
+    "https://api.openai.com/v1/chat/completions",
+    {
+      model: "gpt-4o",
+      max_tokens: 1500,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:${mimeType};base64,${base64Image}`,
+                detail: "high"   // IMPORTANT: use high detail for prescriptions
+              }
+            },
+            {
+              type: "text",
+              text: `You are a medical prescription OCR expert. 
+              
+Analyze this prescription image carefully and extract ALL information.
+
+IMPORTANT INSTRUCTIONS:
+1. Extract ALL text visible in the prescription
+2. Pay special attention to medicine/drug names — even if handwriting is unclear, make your best interpretation
+3. Look for common prescription abbreviations: Tab (tablet), Cap (capsule), Inj (injection), Syr (syrup), mg, ml, OD (once daily), BD (twice daily), TDS (thrice daily)
+4. If a word looks like a medicine name (even partial), include it
+5. Correct obvious OCR errors in drug names (e.g., "Paracetmol" → "Paracetamol")
+
+Return your response in this EXACT JSON format:
+{
+  "fullText": "complete raw text from prescription",
+  "medicines": [
+    {
+      "name": "drug name as written",
+      "correctedName": "corrected standard drug name",
+      "dosage": "dosage if visible",
+      "frequency": "frequency if visible"
+    }
+  ],
+  "patientAge": "age if visible or null",
+  "doctorName": "doctor name if visible or null",
+  "date": "prescription date if visible or null",
+  "notes": "any other relevant notes"
+}
+
+Return ONLY the JSON, no other text.`
+            }
+          ]
+        }
+      ]
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      timeout: 30000
+    }
+  );
+
+  const rawContent: string =
+    response.data?.choices?.[0]?.message?.content || "";
+
+  logger.info("GPT-4o Vision completed successfully");
+
+  // Parse the JSON response
+  let parsed: any = {};
+
+  try {
+    // Remove markdown code blocks if GPT wraps in ```json
+    const cleaned = rawContent.replace(/```json\n?|\n?```/g, "").trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    // If JSON parsing fails, treat the raw content as fullText
+    logger.warn("GPT-4o response was not valid JSON, using raw text");
+    parsed = { fullText: rawContent, medicines: [] };
+  }
+
+  // Extract drug names from parsed medicines
+  const drugs: string[] = (parsed.medicines || []).map(
+    (m: any) => m.correctedName || m.name || ""
+  ).filter(Boolean);
+
+  const fullText: string = parsed.fullText || rawContent;
+
+  return {
+    text: fullText,
+    provider: "gpt4o-vision",
+    drugs,
+    rawResponse: rawContent
+  };
+}
+
+/* ============================================================
+   GOOGLE VISION  ← FALLBACK #1
+============================================================ */
+
+export async function processWithGoogleVision(
+  imageBuffer: Buffer
+): Promise<OCRResult> {
+
+  const apiKey = process.env.GOOGLE_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("GOOGLE_API_KEY is not set");
+  }
+
+  logger.info("Starting Google Vision OCR");
+
+  const base64Image = imageBuffer.toString("base64");
+
+  const response = await axios.post(
+    `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
+    {
+      requests: [
+        {
+          image: { content: base64Image },
+          features: [{ type: "DOCUMENT_TEXT_DETECTION" }]  // DOCUMENT mode is better than TEXT_DETECTION
+        }
+      ]
+    },
+    { timeout: 15000 }
+  );
+
+  const text: string =
+    response.data?.responses?.[0]?.fullTextAnnotation?.text ||
+    response.data?.responses?.[0]?.textAnnotations?.[0]?.description ||
+    "";
+
+  logger.info("Google Vision OCR completed");
+
+  return {
+    text,
+    provider: "google-vision",
+    drugs: []   // Google Vision returns raw text; drug extraction is done by drugMatcher
+  };
+}
+
+/* ============================================================
+   TESSERACT  ← LAST RESORT FALLBACK
+============================================================ */
+
+export async function processWithTesseract(
+  imageBuffer: Buffer
+): Promise<OCRResult> {
+
+  logger.info("Starting Tesseract OCR (last resort)");
+
+  const tempPath = path.join(os.tmpdir(), `ocr-${Date.now()}.png`);
+
+  try {
+
+    fs.writeFileSync(tempPath, imageBuffer);
+
+    const result = await Tesseract.recognize(tempPath, "eng", {
+      logger: (m) => {
+        if (m.status === "recognizing text") {
+          logger.debug(`Tesseract: ${Math.round(m.progress * 100)}%`);
+        }
+      }
+    });
+
+    return {
+      text: result?.data?.text || "",
+      provider: "tesseract",
+      drugs: []
+    };
+
+  } finally {
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+  }
+}
+
+/* ============================================================
+   MAIN EXPORT — processImage()
+   
+   THIS IS WHAT YOUR CONTROLLER CALLS.
+   
+   FIXED: Now accepts BOTH a file path (string) OR a Buffer.
+   Your controller was passing a file path — this now works correctly.
+============================================================ */
+
+export const processImage = async (
+  input: string | Buffer,           // ← FIXED: accepts path OR buffer
+  preferredProvider?: string
+): Promise<OCRResult> => {
+
+  // Step 1: Convert input to buffer (works for both path and buffer)
+  const rawBuffer = await toBuffer(input);
+
+  // Step 2: Preprocess image for better accuracy
+  logger.info("Preprocessing image...");
+  const imageBuffer = await preprocessImage(rawBuffer);
+
+  const provider =
+    preferredProvider ||
+    process.env.OCR_PROVIDER ||
+    "gpt4o";   // Default to GPT-4o
+
+  // Step 3: Try GPT-4o first (best for handwriting)
+  if (provider === "gpt4o" || provider === "openai") {
+    try {
+      const result = await processWithGPT4oVision(imageBuffer);
+      logger.info(`GPT-4o extracted ${result.drugs.length} drugs: ${result.drugs.join(", ")}`);
+      return result;
+    } catch (err: any) {
+  console.error("GPT-4o FULL ERROR:", JSON.stringify(err.response?.data || err.message, null, 2));
+  logger.warn(`GPT-4o failed: ${err.message} — trying Google Vision`);
+}
+  }
+
+  // Step 4: Try Google Vision
+  if (process.env.GOOGLE_API_KEY) {
+    try {
+      const result = await processWithGoogleVision(imageBuffer);
+      return result;
+    } catch (err: any) {
+      logger.warn(`Google Vision failed: ${err.message} — falling back to Tesseract`);
+    }
+  }
+
+  // Step 5: Last resort — Tesseract
+  return await processWithTesseract(imageBuffer);
+};
+
+/* ============================================================
+   DETECT MIME TYPE from buffer header bytes
+============================================================ */
+
+function detectMimeType(buffer: Buffer): string {
+  // Check magic bytes
+  if (buffer[0] === 0xff && buffer[1] === 0xd8) return "image/jpeg";
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  )
+    return "image/png";
+  if (buffer[0] === 0x47 && buffer[1] === 0x49) return "image/gif";
+  if (buffer[0] === 0x52 && buffer[1] === 0x49) return "image/webp";
+  return "image/jpeg"; // default fallback
+}
+
+/* ============================================================
+   PDF placeholder
+============================================================ */
+
+export const processPDF = async (): Promise<OCRResult> => ({
+  text: "[PDF OCR not implemented]",
+  provider: "manual",
+  drugs: []
+});
+
+export default {
+  processImage,
+  processPDF,
+  processWithGPT4oVision,
+  processWithGoogleVision,
+  processWithTesseract
+};

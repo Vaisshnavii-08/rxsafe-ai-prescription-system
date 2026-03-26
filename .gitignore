@@ -1,0 +1,10 @@
+node_modules/
+rxsafe-backend/node_modules/
+rxsafe-frontend/node_modules/
+
+uploads/
+logs/
+*.log
+*.zip
+.DS_Store
+.env

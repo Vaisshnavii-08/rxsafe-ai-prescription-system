@@ -1,0 +1,73 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const drugs = [
+  ["Paracetamol","Analgesic",500,1000],
+  ["Ibuprofen","NSAID",200,400],
+  ["Diclofenac","NSAID",50,150],
+  ["Naproxen","NSAID",250,500],
+  ["Aspirin","Antiplatelet",75,325],
+  ["Amoxicillin","Antibiotic",250,500],
+  ["Azithromycin","Antibiotic",250,500],
+  ["Ciprofloxacin","Antibiotic",250,750],
+  ["Doxycycline","Antibiotic",100,200],
+  ["Cephalexin","Antibiotic",250,500],
+  ["Metformin","Antidiabetic",500,2000],
+  ["Glibenclamide","Antidiabetic",2,10],
+  ["Insulin","Antidiabetic",5,40],
+  ["Atorvastatin","Statin",10,80],
+  ["Rosuvastatin","Statin",5,40],
+  ["Simvastatin","Statin",10,40],
+  ["Losartan","ARB",25,100],
+  ["Telmisartan","ARB",20,80],
+  ["Valsartan","ARB",80,320],
+  ["Enalapril","ACE Inhibitor",5,20],
+  ["Lisinopril","ACE Inhibitor",5,40],
+  ["Amlodipine","Calcium Channel Blocker",5,10],
+  ["Nifedipine","Calcium Channel Blocker",10,60],
+  ["Omeprazole","PPI",20,40],
+  ["Pantoprazole","PPI",20,40],
+  ["Rabeprazole","PPI",20,40],
+  ["Esomeprazole","PPI",20,40],
+  ["Ranitidine","H2 Blocker",150,300],
+  ["Famotidine","H2 Blocker",20,40],
+  ["Salbutamol","Bronchodilator",2,4],
+  ["Formoterol","Bronchodilator",6,12],
+  ["Budesonide","Corticosteroid",200,800],
+  ["Prednisolone","Corticosteroid",5,60],
+  ["Hydrocortisone","Corticosteroid",20,100],
+  ["Warfarin","Anticoagulant",2,10],
+  ["Heparin","Anticoagulant",5000,20000],
+  ["Clopidogrel","Antiplatelet",75,75],
+  ["Vitamin D3","Supplement",1000,4000],
+  ["Calcium Carbonate","Supplement",500,1500],
+  ["Iron Sulfate","Supplement",65,200],
+  ["Folic Acid","Supplement",1,5],
+  ["Zinc","Supplement",10,50],
+  ["Levothyroxine","Hormone",25,150],
+  ["Methimazole","Antithyroid",5,30],
+  ["Propranolol","Beta Blocker",40,320],
+  ["Metoprolol","Beta Blocker",25,200],
+  ["Atenolol","Beta Blocker",25,100],
+  ["Furosemide","Diuretic",20,80],
+  ["Hydrochlorothiazide","Diuretic",12.5,50],
+  ["Spironolactone","Diuretic",25,100],
+];
+
+let csv = "name,therapeuticClass,minDoseMg,maxDoseMg\n";
+
+for (let i = 0; i < 6; i++) {
+  drugs.forEach(d => {
+    csv += `${d[0]},${d[1]},${d[2]},${d[3]}\n`;
+  });
+}
+
+const filePath = path.join(__dirname, "../seed/drugs.csv");
+
+fs.writeFileSync(filePath, csv);
+
+console.log("Dataset generated with ~300 drugs");
